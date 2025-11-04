@@ -1,20 +1,10 @@
-
 #define ENABLE_USER_AUTH
 #define ENABLE_DATABASE
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <FirebaseClient.h>
 #include <DHT.h>
-
-// --- CONFIGURATION CONSTANTS ---
-#define WIFI_SSID "TESTESP"
-#define WIFI_PASSWORD "12345678"
-
-// Firebase credentials
-#define API_KEY "AIzaSyCCYiljdtPktFUmUht59_d8K7v7WeiPWdg"
-#define USER_EMAIL "saunok@gmail.com"
-#define USER_PASSWORD "12345678"
-#define DATABASE_URL "https://control-greenhouse-default-rtdb.asia-southeast1.firebasedatabase.app"
+#include "secrets.h" // ✅ Import secrets
 
 // --- PIN DEFINITIONS ---
 #define DHTPIN 14
@@ -35,18 +25,20 @@ const unsigned long minGapBetweenWateringsMs = 30000;
 unsigned long lastWaterTime = 0;
 unsigned long pumpOnUntil = 0;
 
+// Soil PID gains
 float Kp = 2.0f, Ki = 0.08f, Kd = 0.4f;
 float prevError = 0.0f, integral = 0.0f;
 unsigned long prevPidTime = 0;
 const float integralMax = 500.0f;
 float moistureSetpoint = 60.0f;
 
+// Fan PID gains
 float Kp_fan = 3.0f, Ki_fan = 0.2f, Kd_fan = 0.5f;
 float tempSetpoint = 28.0f;
 float fanPrevError = 0, fanIntegral = 0;
 unsigned long fanPrevPidTime = 0;
 
-
+// Firebase objects
 UserAuth user_auth(API_KEY, USER_EMAIL, USER_PASSWORD);
 FirebaseApp app;
 WiFiClientSecure auth_client;
@@ -55,47 +47,60 @@ WiFiClientSecure db_client;
 AsyncClientClass async_db(db_client);
 RealtimeDatabase Database;
 
-
-void processData(AsyncResult &aResult) {
-  if (!aResult.isResult()) return;
+// Firebase result processing
+void processData(AsyncResult &aResult)
+{
+  if (!aResult.isResult())
+    return;
   if (aResult.isError())
     Serial.printf("[Error] %s\n", aResult.error().message().c_str());
 }
 
-
-void sendPumpState(bool on, unsigned long durationMs) {
+void sendPumpState(bool on, unsigned long durationMs)
+{
   Database.set<bool>(async_db, "/iot/device/pump_on", on, processData);
   Database.set<unsigned long>(async_db, "/iot/device/last_water_duration_ms", durationMs, processData);
 }
 
-
-void fuzzyAdjustGains(float tempC, float humPct, int gasRaw) {
+// Fuzzy logic gain tuning
+void fuzzyAdjustGains(float tempC, float humPct, int gasRaw)
+{
   float baseKp = 2.0f;
 
-  if (!isnan(tempC)) {
-    if (tempC >= 32) baseKp += 0.7;
-    else if (tempC >= 28) baseKp += 0.4;
-    else if (tempC <= 18) baseKp -= 0.4;
+  if (!isnan(tempC))
+  {
+    if (tempC >= 32)
+      baseKp += 0.7;
+    else if (tempC >= 28)
+      baseKp += 0.4;
+    else if (tempC <= 18)
+      baseKp -= 0.4;
   }
 
-  if (!isnan(humPct)) {
-    if (humPct >= 75) baseKp -= 0.6;
-    else if (humPct >= 60) baseKp -= 0.2;
+  if (!isnan(humPct))
+  {
+    if (humPct >= 75)
+      baseKp -= 0.6;
+    else if (humPct >= 60)
+      baseKp -= 0.2;
   }
 
   float gasPct = map(constrain(gasRaw, 0, 4095), 0, 4095, 0, 100);
-  if (gasPct > 70) baseKp -= 0.6;
+  if (gasPct > 70)
+    baseKp -= 0.6;
 
   Kp = constrain(baseKp, 0.6f, 4.0f);
   Ki = 0.06f * (Kp / 2.0f);
   Kd = 0.35f * (Kp / 2.0f);
 }
 
-
-float computePID(float currentMoisture) {
+// Soil PID
+float computePID(float currentMoisture)
+{
   unsigned long now = millis();
   float dt = (now - prevPidTime) / 1000.0f;
-  if (prevPidTime == 0) dt = 1.0f;
+  if (prevPidTime == 0)
+    dt = 1.0f;
 
   float error = moistureSetpoint - currentMoisture;
   integral += error * dt;
@@ -108,11 +113,13 @@ float computePID(float currentMoisture) {
   return constrain(Kp * error + Ki * integral + Kd * derivative, 0, 100);
 }
 
-
-float computeFanPID(float currentTemp) {
+// Temperature PID (fan control)
+float computeFanPID(float currentTemp)
+{
   unsigned long now = millis();
   float dt = (now - fanPrevPidTime) / 1000.0f;
-  if (fanPrevPidTime == 0) dt = 1.0f;
+  if (fanPrevPidTime == 0)
+    dt = 1.0f;
 
   float error = currentTemp - tempSetpoint;
   fanIntegral += error * dt;
@@ -125,12 +132,15 @@ float computeFanPID(float currentTemp) {
   return constrain((Kp_fan * error) + (Ki_fan * fanIntegral) + (Kd_fan * derivative), 0, 100);
 }
 
-// Pump ON
-void setPumpOnForMs(unsigned long durationMs) {
-  if (durationMs == 0) return;
+// Pump ON function
+void setPumpOnForMs(unsigned long durationMs)
+{
+  if (durationMs == 0)
+    return;
   unsigned long now = millis();
 
-  if (now - lastWaterTime < minGapBetweenWateringsMs) return;
+  if (now - lastWaterTime < minGapBetweenWateringsMs)
+    return;
 
   durationMs = min(durationMs, maxPumpDurationMs);
   pumpOnUntil = now + durationMs;
@@ -140,50 +150,55 @@ void setPumpOnForMs(unsigned long durationMs) {
   sendPumpState(true, durationMs);
 }
 
-void setup() {
+// --------------------- SETUP ---------------------
+void setup()
+{
   Serial.begin(115200);
   dht.begin();
   pinMode(RELAY_PIN, OUTPUT);
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
+  while (WiFi.status() != WL_CONNECTED)
+    delay(500);
 
   auth_client.setInsecure();
   db_client.setInsecure();
   initializeApp(async_auth, app, getAuth(user_auth), processData);
-  while (!app.ready()) app.loop();
+  while (!app.ready())
+    app.loop();
   app.getApp<RealtimeDatabase>(Database);
   Database.url(DATABASE_URL);
 }
 
 static bool lastPumpState = false;
 
-
-void loop() {
+// ---------------------- LOOP ---------------------
+void loop()
+{
   app.loop();
-   Database.loop();
+  Database.loop();
 
-  // Pump OFF logic
   if (millis() >= pumpOnUntil)
     digitalWrite(RELAY_PIN, LOW);
 
   bool pumpCurrentlyOn = (millis() < pumpOnUntil);
-  if (pumpCurrentlyOn != lastPumpState) {
+  if (pumpCurrentlyOn != lastPumpState)
+  {
     lastPumpState = pumpCurrentlyOn;
     sendPumpState(pumpCurrentlyOn, pumpCurrentlyOn ? (pumpOnUntil - millis()) : 0);
   }
 
-  if (millis() - lastSendTime >= sendInterval) {
+  if (millis() - lastSendTime >= sendInterval)
+  {
     lastSendTime = millis();
 
     float temp = dht.readTemperature();
     float hum = dht.readHumidity();
 
     static float soil = 61;
-    soil += random(-4, 5);     // vary -4% to +4%
+    soil += random(-4, 5);
     soil = constrain(soil, 30, 90);
 
-  
     static int ldr = 2000;
     ldr += random(-200, 201);
     ldr = constrain(ldr, 0, 4095);
@@ -199,18 +214,17 @@ void loop() {
     Database.set<float>(async_db, "/iot/device/fan_pid_output", fanPID, processData);
     Database.set<bool>(async_db, "/iot/device/fan_trigger", fanPID > 20, processData);
 
-    // Save sensor data to Firebase
     Database.set<float>(async_db, "/iot/device/temperature", temp, processData);
     Database.set<float>(async_db, "/iot/device/humidity", hum, processData);
     Database.set<float>(async_db, "/iot/device/soil_pct", soil, processData);
     Database.set<int>(async_db, "/iot/device/light_raw", ldr, processData);
     Database.set<int>(async_db, "/iot/device/gas_raw", gas, processData);
 
-    // Pump activation decision
     unsigned long duration = map(pidOutput, 0, 100, 0, maxPumpDurationMs);
     bool pid_trigger = (soil < moistureSetpoint - 2 && duration > 500);
 
     Database.set<bool>(async_db, "/iot/device/pid_trigger", pid_trigger, processData);
-    if (pid_trigger) setPumpOnForMs(duration);
+    if (pid_trigger)
+      setPumpOnForMs(duration);
   }
 }
